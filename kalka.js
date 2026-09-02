@@ -1,6 +1,6 @@
 /* «Калька» — референс поверх камеры телефона.
-   Два состояния: подгонка (двигаем референс по кадру) и фиксация
-   (кадр и референс держатся вместе, пальцы приближают всю сцену).
+   «Зафиксировать» останавливает кадр; референс двигается пальцем всегда —
+   и по живой картинке, и по застывшей. Лупа переключает жесты на сцену.
    Всё локально: картинка живёт в IndexedDB, никуда не уходит. */
 
 const $ = s => document.querySelector(s);
@@ -17,10 +17,10 @@ let edgeThr = 88;                // перцентиль порога конту
 let mode = "photo";              // photo | edges | diff
 let opacity = .45;
 let frozen = false;              // на экране застывший кадр, а не живая камера
-let fixed = false;               // референс приклеен к кадру, жесты двигают сцену
+let zoomMode = false;            // жесты двигают всю сцену, а не референс
 let mirrored = false, blinkTimer = null, wakeLock = null;
 
-const T = { x: 0, y: 0, s: 1, a: 0 };   // референс: сдвиг от центра, масштаб, поворот
+const T = { x: 0, y: 0, s: 1 };         // референс: сдвиг от центра и масштаб
 const V = { x: 0, y: 0, s: 1 };         // вид: сдвиг и приближение всей сцены
 
 /* ---------- хранилище ---------- */
@@ -76,7 +76,7 @@ async function startCamera() {
     await video.play().catch(() => {});
     gate.hidden = true;
     keepAwake();
-    hint(photoCv ? "Подгоняйте референс, потом «зафиксировать»" : "Теперь «референс» — выберите картинку", 3400);
+    hint(photoCv ? "Наведите на лист и жмите «зафиксировать»" : "Теперь «референс» — выберите картинку", 3400);
   } catch (e) {
     err.hidden = false;
     err.textContent = (location.protocol !== "https:" && location.hostname !== "localhost")
@@ -106,15 +106,14 @@ function grabFrame() {
   fctx.clearRect(0, 0, frame.width, frame.height);
   fctx.drawImage(video, 0, 0);
   frame.style.display = "block"; video.style.visibility = "hidden";
-  frozen = true; $("#bLive").hidden = false;
+  frozen = true; syncFreezeBtn();
   return true;
 }
 function goLive() {
   if (!stream) return;
   frame.style.display = "none"; video.style.visibility = "";
-  frozen = false; $("#bLive").hidden = true;
-  setFixed(false);
-  resetView();
+  frozen = false; syncFreezeBtn();
+  setZoom(false); resetView();
   hint("Живая камера");
 }
 function setBackgroundImage(img) {
@@ -125,19 +124,24 @@ function setBackgroundImage(img) {
   fctx.drawImage(img, 0, 0, frame.width, frame.height);
   frame.style.display = "block"; video.style.visibility = "hidden";
   frozen = true; gate.hidden = true;
-  $("#bLive").hidden = !stream;
+  syncFreezeBtn();
 }
 
-/* ---------- фиксация ---------- */
-function setFixed(on) {
-  fixed = on;
-  $("#bFix").textContent = on ? "подгонка" : "зафиксировать";
+/* ---------- стоп-кадр и лупа ---------- */
+function syncFreezeBtn() {
+  const b = $("#bFix");
+  b.textContent = frozen ? "живая камера" : "зафиксировать";
+  b.disabled = frozen && !stream;
+}
+function setZoom(on) {
+  zoomMode = on;
+  $("#bZoom").classList.toggle("on", on);
   stage.style.cursor = on ? "grab" : "";
 }
-function fixNow() {
-  if (!frozen) grabFrame();
-  setFixed(true);
-  hint("Зафиксировано. Двумя пальцами — приблизить, ползунок — прозрачность", 3200);
+function freezeNow() {
+  if (!grabFrame()) { hint("Камера не запущена"); return; }
+  setZoom(false);
+  hint("Кадр застыл. Двигайте референс: пальцем — по кадру, двумя — размер", 3400);
 }
 
 /* ---------- референс ---------- */
@@ -225,8 +229,7 @@ function paintOverlay() {
   applyOv();
 }
 function applyOv() {
-  ov.style.transform =
-    `translate(-50%,-50%) translate(${T.x}px,${T.y}px) rotate(${T.a}rad) scale(${T.s})`;
+  ov.style.transform = `translate(-50%,-50%) translate(${T.x}px,${T.y}px) scale(${T.s})`;
 }
 function applyView() {
   scene.style.transform = `translate(${V.x}px,${V.y}px) scale(${V.s})`;
@@ -246,7 +249,7 @@ function fit() {
   if (!photoCv) return;
   const { w, h } = stageSize();
   T.s = Math.min(w / photoCv.width, h / photoCv.height) * .92;
-  T.x = 0; T.y = 0; T.a = 0;
+  T.x = 0; T.y = 0;
   applyOv(); saveState();
 }
 
@@ -256,8 +259,8 @@ async function useImage(file, { restore = false } = {}) {
   edgeCv = buildEdges(photoCv, edgeThr);
   URL.revokeObjectURL(img.src);
   if (!restore) {
-    fit(); setFixed(false);
-    hint("Пальцем двигать, двумя — масштаб и поворот");
+    fit();
+    hint("Пальцем двигать, двумя — размер");
     kvSet("ref", file).catch(() => {});
   }
   paintOverlay();
@@ -289,22 +292,18 @@ function toScene(p) {
   return { x: (p.x - w / 2 - V.x) / V.s + w / 2, y: (p.y - h / 2 - V.y) / V.s + h / 2 };
 }
 /* Общая математика: объект с центром O следует за щепотью пальцев. */
-function drive(target, cur, withRotate, inScene) {
-  const k = cur.n > 1 ? cur.d / prev.d : 1;
-  const dth = (cur.n > 1 && withRotate) ? cur.ang - prev.ang : 0;
+function drive(target, cur, inScene) {
+  const k = cur.n > 1 ? cur.d / prev.d : 1;                    // поворота нет: только сдвиг и размер
   const { w, h } = stageSize();
   const p0 = inScene ? toScene({ x: prev.cx, y: prev.cy }) : { x: prev.cx, y: prev.cy };
   const p1 = inScene ? toScene({ x: cur.cx, y: cur.cy }) : { x: cur.cx, y: cur.cy };
   const ox = w / 2 + target.x, oy = h / 2 + target.y;
-  const vx = ox - p0.x, vy = oy - p0.y;
-  const cos = Math.cos(dth), sin = Math.sin(dth);
-  target.x = p1.x + (vx * cos - vy * sin) * k - w / 2;
-  target.y = p1.y + (vx * sin + vy * cos) * k - h / 2;
-  if (withRotate) target.a += dth;
+  target.x = p1.x + (ox - p0.x) * k - w / 2;
+  target.y = p1.y + (oy - p0.y) * k - h / 2;
   return k;
 }
 stage.addEventListener("pointerdown", e => {
-  if (!photoCv && !fixed) return;
+  if (!photoCv && !zoomMode) return;
   try { stage.setPointerCapture(e.pointerId); } catch (err) {}
   pts.set(e.pointerId, toStage(e));
   prev = gather();
@@ -315,12 +314,12 @@ stage.addEventListener("pointermove", e => {
   pts.set(e.pointerId, toStage(e));
   const cur = gather();
   if (!prev || cur.n !== prev.n) { prev = cur; return; }
-  if (fixed) {
-    const k = drive(V, cur, false, false);
+  if (zoomMode) {
+    const k = drive(V, cur, false);
     V.s = Math.max(.5, Math.min(12, V.s * k));
     clampView(); applyView();
   } else {
-    const k = drive(T, cur, true, true);
+    const k = drive(T, cur, true);
     T.s = Math.max(.03, Math.min(40, T.s * k));
     applyOv();
   }
@@ -330,10 +329,10 @@ stage.addEventListener("pointermove", e => {
 function endPointer(e) {
   if (!pts.delete(e.pointerId)) return;
   prev = pts.size ? gather() : null;
-  if (!fixed) saveState();
+  if (!zoomMode) saveState();
   if (tapPos && Date.now() - tapPos.t < 300 && !pts.size) {     // двойное касание
     const now = Date.now();
-    if (now - lastTap < 320) { fixed ? resetView() : fit(); hint(fixed ? "Масштаб 1:1" : "Референс вписан"); lastTap = 0; }
+    if (now - lastTap < 320) { zoomMode ? resetView() : fit(); hint(zoomMode ? "Масштаб 1:1" : "Референс вписан"); lastTap = 0; }
     else lastTap = now;
   }
   tapPos = null;
@@ -341,17 +340,17 @@ function endPointer(e) {
 stage.addEventListener("pointerup", endPointer);
 stage.addEventListener("pointercancel", endPointer);
 stage.addEventListener("wheel", e => {
-  if (!photoCv && !fixed) return;
+  if (!photoCv && !zoomMode) return;
   e.preventDefault();
   const r = stage.getBoundingClientRect();
   const cx = mirrored ? r.width - (e.clientX - r.left) : e.clientX - r.left, cy = e.clientY - r.top;
   const k = Math.exp(-e.deltaY * .0016);
-  const t = fixed ? V : T;
-  const p = fixed ? { x: cx, y: cy } : toScene({ x: cx, y: cy });
+  const t = zoomMode ? V : T;
+  const p = zoomMode ? { x: cx, y: cy } : toScene({ x: cx, y: cy });
   const ox = r.width / 2 + t.x, oy = r.height / 2 + t.y;
   t.x = p.x + (ox - p.x) * k - r.width / 2;
   t.y = p.y + (oy - p.y) * k - r.height / 2;
-  if (fixed) { V.s = Math.max(.5, Math.min(12, V.s * k)); clampView(); applyView(); }
+  if (zoomMode) { V.s = Math.max(.5, Math.min(12, V.s * k)); clampView(); applyView(); }
   else { T.s = Math.max(.03, Math.min(40, T.s * k)); applyOv(); saveState(); }
 }, { passive: false });
 
@@ -366,10 +365,13 @@ $("#fileBg").onchange = async e => {
   e.target.value = "";
   hint("Снимок вместо камеры. «Референс» — и сверяйте.", 3000);
 };
-$("#bFix").onclick = () => { fixed ? (setFixed(false), hint("Снова двигаем референс")) : fixNow(); };
-$("#bLive").onclick = goLive;
+$("#bFix").onclick = () => { frozen ? goLive() : freezeNow(); };
+$("#bZoom").onclick = () => {
+  setZoom(!zoomMode);
+  hint(zoomMode ? "Лупа: пальцы приближают кадр, референс стоит" : "Снова двигаем референс");
+};
 $("#bFit").onclick = () => {
-  if (fixed) { resetView(); hint("Масштаб 1:1"); }
+  if (zoomMode) { resetView(); hint("Масштаб 1:1"); }
   else { fit(); hint("Референс вписан в кадр"); }
 };
 $("#bGrid").onclick = () => {
@@ -431,7 +433,7 @@ $("#bSave").onclick = async () => {
   if (src) {
     c.save();
     c.translate((w / 2 + T.x) * k, (h / 2 + T.y) * k);
-    c.rotate(T.a); c.scale(T.s * k, T.s * k);
+    c.scale(T.s * k, T.s * k);
     c.globalAlpha = blinkTimer ? Math.max(.85, opacity) : opacity;
     if (mode === "diff") c.globalCompositeOperation = "difference";
     c.drawImage(src, -src.width / 2, -src.height / 2);
@@ -474,8 +476,16 @@ window.addEventListener("drop", e => {
       if (st.grid) { grid.classList.add("on"); $("#bGrid").classList.add("on"); }
       if (st.mirrored) { mirrored = true; stage.classList.add("mirror"); $("#bMirror").classList.add("on"); }
     }
-    const f = await kvGet("ref");
-    if (f) await useImage(f, { restore: true });
+    let f = await kvGet("ref");
+    let own = !!f;
+    if (!f) {                                   // исходный референс зашит в приложение
+      const r = await fetch("ref-default.png").catch(() => null);
+      if (r && r.ok) f = new File([await r.blob()], "ref-default.png", { type: "image/png" });
+    }
+    if (f) {
+      await useImage(f, { restore: true });
+      if (!own && !(st && st.T)) fit();
+    }
   } catch (e) {}
 })();
 
@@ -497,4 +507,5 @@ window.addEventListener("orientationchange", () => setTimeout(fitChrome, 250));
 fitChrome();
 
 applyView();
+syncFreezeBtn();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

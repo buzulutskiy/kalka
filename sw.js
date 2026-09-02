@@ -1,7 +1,7 @@
 /* «Калька» — service worker. Кэшируется оболочка; референс лежит в IndexedDB. */
-const CACHE = "kalka-v3";
+const CACHE = "kalka-v4";
 const ASSETS = [
-  "./", "./index.html", "./kalka.js", "./manifest.webmanifest",
+  "./", "./index.html", "./kalka.js", "./manifest.webmanifest", "./ref-default.png",
   "./icon-180.png", "./icon-192.png", "./icon-512.png", "./favicon-32.png"
 ];
 
