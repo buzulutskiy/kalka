@@ -467,7 +467,7 @@ function moveSheet(cur, k, p0, p1) {                 // весь лист сле
   }));
 }
 stage.addEventListener("pointerdown", e => {
-  if (!photoCv && !zoomMode) return;
+  if (!photoCv && !zoomMode && !locked) return;
   try { stage.setPointerCapture(e.pointerId); } catch (err) {}
   pts.set(e.pointerId, toStage(e));
   prev = gather();
@@ -499,7 +499,7 @@ stage.addEventListener("pointermove", e => {
     const p = toScene({ x: cur.cx, y: cur.cy });
     activePts()[dragCorner] = { x: p.x + grabOff.x, y: p.y + grabOff.y };
     marks ? drawQuad() : applyOv();
-  } else if (zoomMode || frameMode) {                  // в разметке пальцы возят кадр
+  } else if (zoomMode || frameMode || locked) {        // под замком и в разметке пальцы возят кадр
     const k = cur.n > 1 ? cur.d / prev.d : 1;
     const { w, h } = stageSize();
     const ox = w / 2 + V.x, oy = h / 2 + V.y;
@@ -535,8 +535,7 @@ function endPointer(e) {
   } else if (wasTap && !frameMode) {
     const now = Date.now();
     if (now - lastTap < 320) {
-      if (zoomMode) { resetView(); hint("Масштаб 1:1"); }
-      else if (locked) hint("Картинка на замке — снимите замок наверху");
+      if (zoomMode || locked) { resetView(); hint("Масштаб 1:1"); }
       else { fit(); hint("Рамка сброшена"); }
       lastTap = 0;
     } else lastTap = now;
@@ -551,7 +550,7 @@ stage.addEventListener("wheel", e => {
   const r = stage.getBoundingClientRect();
   const cx = mirrored ? r.width - (e.clientX - r.left) : e.clientX - r.left, cy = e.clientY - r.top;
   const k = Math.exp(-e.deltaY * .0016);
-  if (zoomMode || frameMode) {                       // в разметке колесо приближает кадр
+  if (zoomMode || frameMode || locked) {             // под замком и в разметке колесо приближает кадр
     const ox = r.width / 2 + V.x, oy = r.height / 2 + V.y;
     V.x = cx + (ox - cx) * k - r.width / 2;
     V.y = cy + (oy - cy) * k - r.height / 2;
@@ -588,13 +587,14 @@ function setLocked(on, quiet) {
   b.querySelector("#lockArc").setAttribute("d", on
     ? "M8.2 10.5V7.6a3.8 3.8 0 017.6 0v2.9"                  // дужка закрыта
     : "M8.2 10.5V7.6a3.8 3.8 0 017.6 0");                     // дужка откинута
-  if (!quiet) hint(on ? "Картинка заблокирована" : "Картинку снова можно двигать");
+  if (!quiet) hint(on ? "Картинка на замке — пальцы приближают кадр"
+                      : "Картинку снова можно двигать");
 }
 $("#bLock").onclick = () => setLocked(!locked);
 $("#bFrame").onclick = () => setFrameMode(!frameMode);
 $("#bFrameDone").onclick = () => {
   setFrameMode(false); setLocked(true, true); saveState();
-  hint("Картинка села в рамку и заблокирована — замок наверху её отпускает", 3400);
+  hint("Картинка легла и на замке: пальцы приближают кадр, замок наверху её отпускает", 3600);
 };
 $("#bQuadReset").onclick = startPlacing;
 $("#bTurn").onclick = () => {                      // сдвиг углов = поворот картинки на листе
@@ -632,8 +632,7 @@ $("#bZoom").onclick = () => {
   hint(zoomMode ? "Лупа: пальцы приближают кадр, картинка стоит" : "Снова двигаем картинку");
 };
 $("#bFit").onclick = () => {
-  if (zoomMode) { resetView(); hint("Масштаб 1:1"); }
-  else if (locked) hint("Картинка на замке — снимите замок наверху");
+  if (zoomMode || locked) { resetView(); hint("Масштаб 1:1"); }
   else { fit(); hint("Рамка сброшена в центр кадра"); }
 };
 $("#bGrid").onclick = () => {
