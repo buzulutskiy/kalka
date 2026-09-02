@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Калька — референс поверх камеры</title>
+<meta name="description" content="Камера телефона, поверх — референс. Стоп-кадр, контур, разница: видно, попал ли в пропорцию.">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0D100F">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Калька">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="favicon-32.png">
+<style>
+  :root{
+    --bg:#0D100F; --ink:#E7EDE9; --ink-soft:#9FADA6; --ink-faint:#6F7D77;
+    --glass:rgba(18,23,21,.72); --glass-2:rgba(231,237,233,.10); --line:rgba(231,237,233,.14);
+    --accent:#8FB8A5; --on-accent:#0D100F; --edge:#FF5A47;
+    --sans:-apple-system,system-ui,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 var(--sans);
+    overflow:hidden;overscroll-behavior:none;touch-action:none;
+    -webkit-user-select:none;user-select:none;
+  }
+
+  /* ---------- сцена ---------- */
+  #stage{position:fixed;inset:0;overflow:hidden;background:#000;touch-action:none}
+  #stage.mirror{transform:scaleX(-1)}
+  #scene{position:absolute;inset:0;transform-origin:50% 50%;will-change:transform}
+  #cam,#frame{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+  #frame{display:none}
+  #ov{position:absolute;left:50%;top:50%;transform-origin:50% 50%;will-change:transform;
+      pointer-events:none;display:none;transition:opacity .12s linear}
+  #ov.diff{mix-blend-mode:difference}
+  #grid{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none}
+  #grid.on{display:block}
+
+  /* ---------- верх ---------- */
+  .top{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;justify-content:flex-end;
+       padding:calc(env(safe-area-inset-top) + 10px) 12px 10px;z-index:5}
+  .ico{width:42px;height:42px;flex:none;border:0;border-radius:14px;background:var(--glass);
+       -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+       color:var(--ink);display:grid;place-items:center;box-shadow:0 2px 14px rgba(0,0,0,.35)}
+  .ico svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;
+           stroke-linecap:round;stroke-linejoin:round}
+  .ico.on{background:var(--accent);color:var(--on-accent)}
+  .ico[hidden]{display:none}
+
+  /* ---------- панель ---------- */
+  .panel{position:fixed;left:0;right:0;bottom:0;z-index:5;
+    padding:12px 12px calc(env(safe-area-inset-bottom) + 12px);
+    background:linear-gradient(to top,rgba(9,12,11,.97) 55%,rgba(9,12,11,.88) 80%,rgba(9,12,11,0));
+    -webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+    display:flex;flex-direction:column;gap:10px;transition:transform .22s ease,opacity .22s ease}
+  .panel.hidden{transform:translateY(calc(100% - 0px));opacity:0;pointer-events:none}
+  .row{display:flex;gap:8px;align-items:center}
+  .chip{flex:1;min-width:0;padding:10px 6px;border:1px solid rgba(231,237,233,.20);border-radius:12px;
+        background:rgba(231,237,233,.13);color:#CFDAD4;font:500 14px/1 var(--sans)}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+  .sld{display:flex;align-items:center;gap:10px}
+  .sld span{width:98px;flex:none;color:#96A59E;font-size:12px;letter-spacing:.02em}
+  .sld[hidden]{display:none}
+  input[type=range]{flex:1;-webkit-appearance:none;appearance:none;height:26px;background:transparent}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:rgba(231,237,233,.22)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;margin-top:-9px;
+        border-radius:50%;background:var(--accent);border:0;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:rgba(231,237,233,.22)}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px;border:0;border-radius:50%;background:var(--accent)}
+  .btn{flex:1;padding:14px 10px;border:1px solid rgba(231,237,233,.20);border-radius:14px;
+       background:rgba(231,237,233,.13);color:var(--ink);font:600 15px/1 var(--sans)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);flex:1.4}
+  .btn:disabled{opacity:.4}
+
+  /* ---------- подсказка ---------- */
+  .zoom{position:fixed;left:12px;top:calc(env(safe-area-inset-top) + 10px);z-index:5;
+        padding:0 12px;height:42px;display:none;align-items:center;border-radius:14px;
+        background:var(--glass);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+        color:var(--ink-soft);font:500 13px/1 var(--sans);letter-spacing:.02em}
+  .zoom.on{display:flex}
+  .hint{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 66px);transform:translateX(-50%);
+        z-index:6;max-width:min(88vw,420px);text-align:center;padding:9px 14px;border-radius:12px;
+        background:var(--glass);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+        color:var(--ink-soft);font-size:13px;line-height:1.35;opacity:0;transition:opacity .25s}
+  .hint.on{opacity:1}
+
+  /* ---------- стартовый экран ---------- */
+  .gate{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;justify-content:center;
+        gap:14px;padding:28px 24px calc(env(safe-area-inset-bottom) + 28px);background:var(--bg)}
+  .gate[hidden]{display:none}
+  .gate h1{margin:0;font-size:26px;letter-spacing:-.01em;font-weight:650}
+  .gate p{margin:0;color:var(--ink-soft);font-size:15px;line-height:1.5;max-width:34em}
+  .gate ol{margin:2px 0 6px;padding-left:20px;color:var(--ink-soft);font-size:14px;line-height:1.7}
+  .gate .btn{flex:none;padding:16px}
+  .err{color:#D4908A;font-size:13px;line-height:1.5}
+  .mark{width:52px;height:52px;margin-bottom:4px}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="scene">
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="frame"></canvas>
+    <canvas id="ov"></canvas>
+    <svg id="grid" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <g stroke="rgba(255,255,255,.42)" stroke-width=".25" vector-effect="non-scaling-stroke">
+        <path d="M33.33 0V100M66.66 0V100M0 33.33H100M0 66.66H100"/>
+        <path d="M0 0L100 100M100 0L0 100" stroke="rgba(255,255,255,.22)"/>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<div class="top">
+  <button class="ico" id="bLive" hidden title="живая камера" aria-label="вернуть живую камеру">
+    <svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 012-2h2l1.5-2h7L17 6h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><circle cx="12" cy="12.5" r="3.5"/></svg>
+  </button>
+  <button class="ico" id="bGrid" title="сетка" aria-label="сетка">
+    <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>
+  </button>
+  <button class="ico" id="bMirror" title="зеркало" aria-label="зеркало">
+    <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5"/></svg>
+  </button>
+  <button class="ico" id="bFit" title="вписать" aria-label="вписать">
+    <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+  </button>
+  <button class="ico" id="bPanel" title="панель" aria-label="скрыть панель">
+    <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+  </button>
+</div>
+
+<div class="zoom" id="zoom">1,0×</div>
+<div class="hint" id="hint"></div>
+
+<div class="panel" id="panel">
+  <div class="row">
+    <button class="chip on" data-mode="photo">фото</button>
+    <button class="chip" data-mode="edges">контур</button>
+    <button class="chip" data-mode="diff">разница</button>
+    <button class="chip" id="bBlink">мигание</button>
+  </div>
+  <label class="sld"><span>прозрачность</span><input id="op" type="range" min="0" max="100" value="45"></label>
+  <label class="sld" id="thrRow" hidden><span>порог контура</span><input id="thr" type="range" min="60" max="98" value="88"></label>
+  <div class="row">
+    <button class="btn" id="bPick">референс</button>
+    <button class="btn primary" id="bFix">зафиксировать</button>
+    <button class="btn" id="bSave">снимок</button>
+  </div>
+</div>
+
+<div class="gate" id="gate">
+  <svg class="mark" viewBox="0 0 48 48" fill="none">
+    <rect x="4" y="10" width="26" height="26" rx="5" stroke="#8FB8A5" stroke-width="2.4"/>
+    <rect x="18" y="16" width="26" height="26" rx="5" fill="rgba(143,184,165,.18)" stroke="#8FB8A5" stroke-width="2.4"/>
+  </svg>
+  <h1>Калька</h1>
+  <p>Камера смотрит на рисунок, сверху ложится референс. Стоп-кадр — и можно спокойно двигать картинку, пока не сядет по пропорции.</p>
+  <ol>
+    <li>Наведите камеру на лист</li>
+    <li>«Референс» — выберите картинку</li>
+    <li>Подгоните: пальцем двигать, двумя — масштаб и поворот</li>
+    <li>«Зафиксировать» — дальше приближайте и крутите прозрачность</li>
+  </ol>
+  <button class="btn primary" id="bStart">включить камеру</button>
+  <button class="btn" id="bNoCam">без камеры — открыть снимок</button>
+  <p class="err" id="err" hidden></p>
+</div>
+
+<input id="file" type="file" accept="image/*" hidden>
+<input id="fileBg" type="file" accept="image/*" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>
