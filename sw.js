@@ -1,7 +1,7 @@
 /* «Калька» — service worker. Кэшируется оболочка; референс лежит в IndexedDB. */
-const CACHE = "kalka-v2";
+const CACHE = "kalka-v3";
 const ASSETS = [
-  "./", "./index.html", "./app.js", "./manifest.webmanifest",
+  "./", "./index.html", "./kalka.js", "./manifest.webmanifest",
   "./icon-180.png", "./icon-192.png", "./icon-512.png", "./favicon-32.png"
 ];
 
@@ -18,7 +18,7 @@ self.addEventListener("fetch", e => {
   const req = e.request, url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
   const isHTML = req.mode === "navigate" || (req.headers.get("accept") || "").indexOf("text/html") >= 0;
-  const isCode = url.pathname.endsWith("app.js");
+  const isCode = url.pathname.endsWith("kalka.js");
   if (isHTML || isCode) {
     e.respondWith(
       fetch(req).then(r => { const c = r.clone(); caches.open(CACHE).then(cc => cc.put(req, c)); return r; })
