@@ -60,6 +60,7 @@
   .ico svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;
            stroke-linecap:round;stroke-linejoin:round}
   .ico.on{background:var(--accent);color:var(--on-accent)}
+  @media (max-width:430px){ .top{gap:6px;padding-left:10px;padding-right:10px} .ico{width:38px;height:38px;border-radius:12px} }
   .ico[hidden]{display:none}
 
   /* ---------- панель ---------- */
@@ -139,6 +140,9 @@
 <div class="top">
   <button class="ico" id="bZoom" title="лупа" aria-label="режим лупы">
     <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2M11 8.5v5M8.5 11h5"/></svg>
+  </button>
+  <button class="ico" id="bLock" title="замок" aria-label="заблокировать картинку">
+    <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2.2"/><path id="lockArc" d="M8.2 10.5V7.6a3.8 3.8 0 017.6 0v2.9"/></svg>
   </button>
   <button class="ico" id="bFrame" title="рамка листа" aria-label="рамка листа">
     <svg viewBox="0 0 24 24"><path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/><path d="M8 12h8M12 8v8" stroke-width="1.2" opacity=".55"/></svg>

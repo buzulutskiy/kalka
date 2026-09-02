@@ -24,6 +24,7 @@ let zoomMode = false;            // жесты двигают всю сцену,
 let frameMode = false;           // разметка углов листа
 let ghost = false;               // в разметке показывать бледную картинку
 let paperMode = "a4";            // a4 | free — во что вписывать картинку
+let locked = false;              // картинка приколота: жесты её не двигают
 let mirrored = false, blinkTimer = null, wakeLock = null;
 
 let sheet = null;                // 4 угла листа в координатах сцены
@@ -60,7 +61,7 @@ async function kvGet(k) {
 const saveState = () => {
   try {
     localStorage.setItem("kalka.state", JSON.stringify({
-      sheet, paperMode, mode, opacity, edgeThr, mirrored,
+      sheet, paperMode, mode, opacity, edgeThr, mirrored, locked,
       grid: grid.classList.contains("on"), size: stageSize()
     }));
   } catch (e) {}
@@ -506,7 +507,7 @@ stage.addEventListener("pointermove", e => {
     V.y = cur.cy + (oy - prev.cy) * k - h / 2;
     V.s = Math.max(.5, Math.min(12, V.s * k));
     clampView(); applyView();
-  } else if (sheet && !marks) {
+  } else if (sheet && !marks && !locked) {
     const k = cur.n > 1 ? cur.d / prev.d : 1;
     moveSheet(cur, k, toScene({ x: prev.cx, y: prev.cy }), toScene({ x: cur.cx, y: cur.cy }));
     applyOv();
@@ -534,8 +535,9 @@ function endPointer(e) {
   } else if (wasTap && !frameMode) {
     const now = Date.now();
     if (now - lastTap < 320) {
-      zoomMode ? resetView() : fit();
-      hint(zoomMode ? "Масштаб 1:1" : "Рамка сброшена");
+      if (zoomMode) { resetView(); hint("Масштаб 1:1"); }
+      else if (locked) hint("Картинка на замке — снимите замок наверху");
+      else { fit(); hint("Рамка сброшена"); }
       lastTap = 0;
     } else lastTap = now;
   }
@@ -555,7 +557,7 @@ stage.addEventListener("wheel", e => {
     V.y = cy + (oy - cy) * k - r.height / 2;
     V.s = Math.max(.5, Math.min(12, V.s * k));
     clampView(); applyView();
-  } else if (sheet) {
+  } else if (sheet && !locked) {
     const p = toScene({ x: cx, y: cy });
     moveSheet(null, k, p, p);
     applyOv(); saveState();
@@ -565,6 +567,7 @@ stage.addEventListener("wheel", e => {
 /* ---------- режим рамки ---------- */
 function setFrameMode(on) {
   frameMode = on;
+  if (on) setLocked(false, true);                     // в разметке углы должны двигаться
   if (!on && marks) { marks = null; if (!sheet) sheet = defaultSheet(); }
   $("#bFrame").classList.toggle("on", on);
   quadLayer.classList.toggle("edit", on);
@@ -577,8 +580,22 @@ function setFrameMode(on) {
   updateNote();
   if (on && !marks) hint("Углы можно тащить, «заново» — расставить с нуля", 3000);
 }
+function setLocked(on, quiet) {
+  locked = on;
+  const b = $("#bLock");
+  b.classList.toggle("on", on);
+  b.title = on ? "снять замок" : "заблокировать картинку";
+  b.querySelector("#lockArc").setAttribute("d", on
+    ? "M8.2 10.5V7.6a3.8 3.8 0 017.6 0v2.9"                  // дужка закрыта
+    : "M8.2 10.5V7.6a3.8 3.8 0 017.6 0");                     // дужка откинута
+  if (!quiet) hint(on ? "Картинка заблокирована" : "Картинку снова можно двигать");
+}
+$("#bLock").onclick = () => setLocked(!locked);
 $("#bFrame").onclick = () => setFrameMode(!frameMode);
-$("#bFrameDone").onclick = () => { setFrameMode(false); hint("Картинка села в рамку"); saveState(); };
+$("#bFrameDone").onclick = () => {
+  setFrameMode(false); setLocked(true, true); saveState();
+  hint("Картинка села в рамку и заблокирована — замок наверху её отпускает", 3400);
+};
 $("#bQuadReset").onclick = startPlacing;
 $("#bTurn").onclick = () => {                      // сдвиг углов = поворот картинки на листе
   if (!sheet || marks) { hint("Сначала отметьте четыре угла"); return; }
@@ -616,6 +633,7 @@ $("#bZoom").onclick = () => {
 };
 $("#bFit").onclick = () => {
   if (zoomMode) { resetView(); hint("Масштаб 1:1"); }
+  else if (locked) hint("Картинка на замке — снимите замок наверху");
   else { fit(); hint("Рамка сброшена в центр кадра"); }
 };
 $("#bGrid").onclick = () => {
@@ -744,6 +762,7 @@ window.addEventListener("drop", e => {
       $("#thrRow").hidden = mode !== "edges";
       if (st.grid) { grid.classList.add("on"); $("#bGrid").classList.add("on"); }
       if (st.mirrored) { mirrored = true; stage.classList.add("mirror"); $("#bMirror").classList.add("on"); }
+      if (st.locked) setLocked(true, true);
       if (Array.isArray(st.sheet) && st.sheet.length === 4) {
         const cur = stageSize(), old = st.size || cur;      // экран мог сменить размер
         const kx = cur.w / (old.w || cur.w), ky = cur.h / (old.h || cur.h);
