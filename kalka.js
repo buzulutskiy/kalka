@@ -25,6 +25,7 @@ let frameMode = false;           // разметка углов листа
 let ghost = false;               // в разметке показывать бледную картинку
 let paperMode = "a4";            // a4 | free — во что вписывать картинку
 let locked = false;              // картинка приколота: жесты её не двигают
+let cmpCv = null, cmpData = null, cmpSig = "", prevMode = "photo", frameStamp = 0;
 let mirrored = false, blinkTimer = null, wakeLock = null;
 
 let sheet = null;                // 4 угла листа в координатах сцены
@@ -111,13 +112,19 @@ function drawCover(ctx, src, sw, sh, dw, dh) {
   const k = Math.max(dw / sw, dh / sh), w = sw * k, h = sh * k;
   ctx.drawImage(src, (dw - w) / 2, (dh - h) / 2, w, h);
 }
+/* Кадр показан через object-fit: cover — перевод пикселей кадра в координаты сцены. */
+function coverMap(sw, sh) {
+  const { w, h } = stageSize();
+  const k = Math.max(w / sw, h / sh);
+  return { k, ox: (w - sw * k) / 2, oy: (h - sh * k) / 2 };
+}
 function grabFrame() {
   if (!stream || !video.videoWidth) return false;
   frame.width = video.videoWidth; frame.height = video.videoHeight;   // родное разрешение: есть что приближать
   fctx.clearRect(0, 0, frame.width, frame.height);
   fctx.drawImage(video, 0, 0);
   frame.style.display = "block"; video.style.visibility = "hidden";
-  frozen = true; syncFreezeBtn();
+  frozen = true; frameStamp++; syncFreezeBtn();
   return true;
 }
 function goLive() {
@@ -134,7 +141,7 @@ function setBackgroundImage(img) {
   fctx.clearRect(0, 0, frame.width, frame.height);
   fctx.drawImage(img, 0, 0, frame.width, frame.height);
   frame.style.display = "block"; video.style.visibility = "hidden";
-  frozen = true; gate.hidden = true;
+  frozen = true; frameStamp++; gate.hidden = true;
   syncFreezeBtn();
 }
 
@@ -149,9 +156,13 @@ function setZoom(on) {
   $("#bZoom").classList.toggle("on", on);
   stage.style.cursor = on ? "grab" : "";
 }
+function refreshCmp() {
+  if (mode !== "cmp") return;
+  if (cmpSig !== cmpSignature()) { buildCompare(); paintOverlay(); }
+}
 function freezeNow() {
   if (!grabFrame()) { hint("Камера не запущена"); return; }
-  setZoom(false);
+  setZoom(false); refreshCmp();
   hint("Кадр застыл. «Рамка» — отметить углы листа", 3200);
 }
 
@@ -230,8 +241,14 @@ function defaultSheet() {
 }
 
 /* ---------- отрисовка ---------- */
+function layerSrc() { return mode === "cmp" ? cmpCv : (mode === "edges" ? edgeCv : photoCv); }
+function layerMatrix() {
+  const H = unitToQuad(sheet);
+  if (mode === "cmp" && cmpCv) return mul3(H, [[1 / cmpCv.width, 0, 0], [0, 1 / cmpCv.height, 0], [0, 0, 1]]);
+  return imageMatrix();
+}
 function paintOverlay() {
-  const src = mode === "edges" ? edgeCv : photoCv;
+  const src = layerSrc();
   if (!src) { ov.style.display = "none"; quadLayer.classList.remove("on"); return; }
   if (!sheet && !marks) sheet = defaultSheet();
   if (marks) {                                   // разметка идёт — картинку не показываем
@@ -253,7 +270,7 @@ function paintOverlay() {
 }
 function applyOv() {
   if (!photoCv || !sheet) return;
-  ov.style.transform = css3d(imageMatrix());
+  ov.style.transform = css3d(layerMatrix());
   drawQuad();
 }
 function activePts() { return marks || sheet || []; }
@@ -335,8 +352,8 @@ function toCanvas(img) {
   return c;
 }
 
-/* Контур: серый → лёгкое размытие → Собель → порог по перцентилю. */
-function buildEdges(base, pct) {
+/* Модуль градиента: серый → лёгкое размытие → Собель. */
+function sobelMag(base) {
   const w = base.width, h = base.height, n = w * h;
   const d = base.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
   const g = new Float32Array(n);
@@ -364,7 +381,12 @@ function buildEdges(base, pct) {
     const m = Math.hypot(gx, gy);
     mag[i] = m; if (m > max) max = m;
   }
+  return { mag, w, h, n, max };
+}
 
+/* Контур: градиент + порог по перцентилю. */
+function buildEdges(base, pct) {
+  const { mag, w, h, n, max } = sobelMag(base);
   const BINS = 512, hist = new Uint32Array(BINS);
   for (let i = 0; i < n; i++) hist[Math.min(BINS - 1, (mag[i] / max * BINS) | 0)]++;
   const want = n * pct / 100;
@@ -384,6 +406,168 @@ function buildEdges(base, pct) {
   }
   oc.putImageData(im, 0, 0);
   return out;
+}
+
+
+/* ---------- сверка: где линия ушла от эталона ----------
+   Кадр распрямляется обратно в плоскость листа, из него вынимаются линии
+   рисунка, и каждая красится по расстоянию до ближайшей линии эталона. */
+const PAPER_LONG = 900;
+
+function paperSize() {
+  const short = Math.round(PAPER_LONG / A4);
+  return paperAspect() > 1 ? { pw: PAPER_LONG, ph: short } : { pw: short, ph: PAPER_LONG };
+}
+function unitPerPx() {                                  // сколько «настоящего» в пикселе листа
+  return paperMode === "a4" ? { k: 297 / PAPER_LONG, unit: "мм" }
+                            : { k: 100 / PAPER_LONG, unit: "% листа" };
+}
+function rectifyFrame(pw, ph) {
+  const src = frozen ? frame : video;
+  const sw = frozen ? frame.width : video.videoWidth;
+  const sh = frozen ? frame.height : video.videoHeight;
+  if (!sw || !sh) return null;
+  const c = document.createElement("canvas"); c.width = pw; c.height = ph;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, pw, ph);
+  const H = unitToQuad(sheet), { k, ox, oy } = coverMap(sw, sh), N = 16;
+  const toSrc = (u, v) => { const p = apply3(H, u, v); return { x: (p.x - ox) / k, y: (p.y - oy) / k }; };
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const u0 = i / N, u1 = (i + 1) / N, v0 = j / N, v1 = (j + 1) / N;
+    const s = [toSrc(u0, v0), toSrc(u1, v0), toSrc(u1, v1), toSrc(u0, v1)];
+    const d = [{ x: u0 * pw, y: v0 * ph }, { x: u1 * pw, y: v0 * ph },
+               { x: u1 * pw, y: v1 * ph }, { x: u0 * pw, y: v1 * ph }];
+    drawTri(ctx, src, s[0], s[1], s[2], d[0], d[1], d[2]);
+    drawTri(ctx, src, s[0], s[2], s[3], d[0], d[2], d[3]);
+  }
+  return c;
+}
+function referenceInPaper(pw, ph) {
+  const { uw, uh, ux, uy } = innerRect();
+  const c = document.createElement("canvas"); c.width = pw; c.height = ph;
+  c.getContext("2d", { willReadFrequently: true }).drawImage(edgeCv, ux * pw, uy * ph, uw * pw, uh * ph);
+  return c;
+}
+function alphaMask(cv) {
+  const w = cv.width, h = cv.height;
+  const d = cv.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  const m = new Uint8Array(w * h);
+  for (let i = 3, p = 0; p < m.length; i += 4, p++) m[p] = d[i] > 40 ? 1 : 0;
+  return m;
+}
+/* Линии рисунка: порог Оцу по градиенту, одиночные точки выбрасываем. */
+function lineMask(cv) {
+  const { mag, w, h, n, max } = sobelMag(cv);
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) hist[Math.min(255, (mag[i] / max * 255) | 0)]++;
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, best = -1, thr = 40;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = n - wB; if (!wF) break;
+    sumB += t * hist[t];
+    const v = wB * wF * (sumB / wB - (sum - sumB) / wF) ** 2;
+    if (v > best) { best = v; thr = t; }
+  }
+  const t = thr / 255 * max;
+  const raw = new Uint8Array(n);
+  for (let i = 0; i < n; i++) raw[i] = mag[i] > t ? 1 : 0;
+  const m = new Uint8Array(n);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    if (!raw[i]) continue;
+    const c = raw[i - 1] + raw[i + 1] + raw[i - w] + raw[i + w] +
+              raw[i - w - 1] + raw[i - w + 1] + raw[i + w - 1] + raw[i + w + 1];
+    if (c >= 2) m[i] = 1;
+  }
+  return m;
+}
+/* Расстояние до ближайшей линии — чамфер 3-4 в два прохода. */
+function distTransform(mask, w, h) {
+  const INF = 1e9, d = new Float32Array(w * h);
+  for (let i = 0; i < d.length; i++) d[i] = mask[i] ? 0 : INF;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; let v = d[i];
+    if (y > 0) {
+      v = Math.min(v, d[i - w] + 3);
+      if (x > 0) v = Math.min(v, d[i - w - 1] + 4);
+      if (x < w - 1) v = Math.min(v, d[i - w + 1] + 4);
+    }
+    if (x > 0) v = Math.min(v, d[i - 1] + 3);
+    d[i] = v;
+  }
+  for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+    const i = y * w + x; let v = d[i];
+    if (y < h - 1) {
+      v = Math.min(v, d[i + w] + 3);
+      if (x < w - 1) v = Math.min(v, d[i + w + 1] + 4);
+      if (x > 0) v = Math.min(v, d[i + w - 1] + 4);
+    }
+    if (x < w - 1) v = Math.min(v, d[i + 1] + 3);
+    d[i] = v;
+  }
+  for (let i = 0; i < d.length; i++) d[i] /= 3;
+  return d;
+}
+function cmpSignature() {
+  return [sheet ? sheet.map(p => Math.round(p.x) + "," + Math.round(p.y)).join(";") : "",
+          paperMode, edgeThr, frameStamp].join("|");
+}
+function buildCompare() {
+  if (!photoCv || !edgeCv || !sheet) return false;
+  const { pw, ph } = paperSize();
+  const paper = rectifyFrame(pw, ph);
+  if (!paper) return false;
+  const mine = lineMask(paper);
+  const ref = alphaMask(referenceInPaper(pw, ph));
+  cmpData = { pw, ph, mine, ref, dRef: distTransform(ref, pw, ph), dMy: distTransform(mine, pw, ph) };
+  cmpSig = cmpSignature();
+  colorCompare();
+  return true;
+}
+function fmt(v) { return v.toFixed(1).replace(".", ","); }
+function colorCompare() {
+  if (!cmpData) return;
+  const { pw, ph, mine, ref, dRef, dMy } = cmpData;
+  const { k: unitPx, unit } = unitPerPx();
+  const tol = +$("#tol").value, bad = tol * 2.5;
+  const c = document.createElement("canvas"); c.width = pw; c.height = ph;
+  const ctx = c.getContext("2d");
+  const im = ctx.createImageData(pw, ph), p = im.data;
+  const hist = new Uint32Array(400);
+  let inTol = 0, total = 0, missed = 0, refTotal = 0;
+  for (let i = 0, j = 0; i < mine.length; i++, j += 4) {
+    if (ref[i]) {
+      refTotal++;
+      if (dMy[i] * unitPx > bad) {                    // линия эталона, которой на рисунке нет
+        missed++;
+        p[j] = 0x5B; p[j + 1] = 0x9D; p[j + 2] = 0xD8; p[j + 3] = 175;
+        continue;
+      }
+    }
+    if (!mine[i]) continue;
+    const e = dRef[i] * unitPx;
+    total++; hist[Math.min(399, Math.round(e * 4))]++;
+    if (e <= tol) { inTol++; p[j] = 0x5A; p[j + 1] = 0xC8; p[j + 2] = 0x8F; }
+    else if (e <= bad) { p[j] = 0xE8; p[j + 1] = 0xB4; p[j + 2] = 0x4A; }
+    else { p[j] = 0xE5; p[j + 1] = 0x5B; p[j + 2] = 0x45; }
+    p[j + 3] = 235;
+  }
+  ctx.putImageData(im, 0, 0);
+  cmpCv = c;
+
+  const at = q => {                                    // квантиль по гистограмме четвертей
+    let acc = 0; const want = total * q;
+    for (let b = 0; b < 400; b++) { acc += hist[b]; if (acc >= want) return b / 4; }
+    return 0;
+  };
+  const dot = (c, t) => `<i class="lg" style="background:${c}"></i>${t}`;
+  $("#cmpNote").innerHTML = total
+    ? `В допуске ${tol} ${unit} — <b>${Math.round(inTol / total * 100)}%</b> ваших линий. ` +
+      `Медиана ${fmt(at(.5))}, у худшей двадцатой части — от ${fmt(at(.95))} ${unit}.<br>` +
+      dot("#5AC88F", "в допуске") + dot("#E8B44A", `до ${fmt(bad)} ${unit}`) + dot("#E55B45", "дальше") +
+      dot("#5B9DD8", `линии нет${missed > refTotal * .12 ? ` (${Math.round(missed / refTotal * 100)}% эталона)` : ""}`)
+    : "Линий на рисунке не нашлось: мало света, слишком бледный карандаш или лист размечен неточно.";
 }
 
 async function useImage(file, { restore = false } = {}) {
@@ -593,7 +777,7 @@ function setLocked(on, quiet) {
 $("#bLock").onclick = () => setLocked(!locked);
 $("#bFrame").onclick = () => setFrameMode(!frameMode);
 $("#bFrameDone").onclick = () => {
-  setFrameMode(false); setLocked(true, true); saveState();
+  setFrameMode(false); setLocked(true, true); refreshCmp(); saveState();
   hint("Картинка легла и на замке: пальцы приближают кадр, замок наверху её отпускает", 3600);
 };
 $("#bQuadReset").onclick = startPlacing;
@@ -651,12 +835,30 @@ $("#bPanel").onclick = () => {
   panel.classList.toggle("hidden");
   $("#bPanel").querySelector("svg").style.transform = panel.classList.contains("hidden") ? "rotate(180deg)" : "";
 };
-document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => {
-  mode = b.dataset.mode;
-  document.querySelectorAll("[data-mode]").forEach(x => x.classList.toggle("on", x === b));
-  $("#thrRow").hidden = mode !== "edges";
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll("[data-mode]").forEach(x => x.classList.toggle("on", x.dataset.mode === m));
+  $("#thrRow").hidden = m !== "edges";
+  $("#tolRow").hidden = m !== "cmp";
+  $("#cmpNote").hidden = m !== "cmp";
   paintOverlay(); saveState();
+}
+document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => {
+  const m = b.dataset.mode;
+  if (m !== "cmp") { setMode(m); return; }
+  if (mode === "cmp") { setMode(prevMode === "cmp" ? "photo" : prevMode); return; }   // тумблер
+  if (!photoCv || !sheet) { hint("Сначала выберите референс"); return; }
+  if (!frozen) { hint("Сверка считается по застывшему кадру — нажмите «зафиксировать»", 3200); return; }
+  prevMode = mode;
+  hint("Считаю сверку…", 1500);
+  setTimeout(() => {
+    if (!cmpCv || cmpSig !== cmpSignature()) {
+      if (!buildCompare()) { hint("Не получилось распрямить кадр"); return; }
+    }
+    setMode("cmp");
+  }, 40);
 });
+$("#tol").oninput = () => { if (mode === "cmp") { colorCompare(); paintOverlay(); } };
 $("#op").oninput = e => { opacity = e.target.value / 100; if (!blinkTimer) ov.style.opacity = opacity; saveState(); };
 $("#thr").onchange = e => {
   edgeThr = +e.target.value;
@@ -710,11 +912,11 @@ $("#bSave").onclick = async () => {
   c.translate(-out.width / 2, -out.height / 2);
   if (frozen) drawCover(c, frame, frame.width, frame.height, out.width, out.height);
   else if (video.videoWidth) drawCover(c, video, video.videoWidth, video.videoHeight, out.width, out.height);
-  const src = mode === "edges" ? edgeCv : photoCv;
+  const src = layerSrc();
   if (src && sheet) {
     c.globalAlpha = blinkTimer ? Math.max(.85, opacity) : opacity;
     if (mode === "diff") c.globalCompositeOperation = "difference";
-    const M = mul3([[k, 0, 0], [0, k, 0], [0, 0, 1]], imageMatrix());
+    const M = mul3([[k, 0, 0], [0, k, 0], [0, 0, 1]], layerMatrix());
     const N = 20, iw = src.width, ih = src.height;
     for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
       const x0 = iw * i / N, x1 = iw * (i + 1) / N, y0 = ih * j / N, y1 = ih * (j + 1) / N;
@@ -753,7 +955,8 @@ window.addEventListener("drop", e => {
   try {
     const st = JSON.parse(localStorage.getItem("kalka.state") || "null");
     if (st) {
-      mode = st.mode || "photo"; opacity = st.opacity ?? .45; edgeThr = st.edgeThr || 88;
+      mode = st.mode === "cmp" ? "photo" : (st.mode || "photo");
+      opacity = st.opacity ?? .45; edgeThr = st.edgeThr || 88;
       paperMode = st.paperMode || "a4";
       $("#bPaper").textContent = paperMode === "a4" ? "лист: A4" : "лист: свободно";
       $("#op").value = Math.round(opacity * 100); $("#thr").value = edgeThr;
@@ -762,7 +965,10 @@ window.addEventListener("drop", e => {
       if (st.grid) { grid.classList.add("on"); $("#bGrid").classList.add("on"); }
       if (st.mirrored) { mirrored = true; stage.classList.add("mirror"); $("#bMirror").classList.add("on"); }
       if (st.locked) setLocked(true, true);
-      if (Array.isArray(st.sheet) && st.sheet.length === 4) {
+      const okQuad = Array.isArray(st.sheet) && st.sheet.length === 4 &&
+        st.sheet.every(p => isFinite(p.x) && isFinite(p.y)) &&
+        Math.hypot(st.sheet[0].x - st.sheet[2].x, st.sheet[0].y - st.sheet[2].y) > 20;
+      if (okQuad) {
         const cur = stageSize(), old = st.size || cur;      // экран мог сменить размер
         const kx = cur.w / (old.w || cur.w), ky = cur.h / (old.h || cur.h);
         sheet = st.sheet.map(p => ({ x: p.x * kx, y: p.y * ky }));
@@ -798,9 +1004,10 @@ if (window.visualViewport) {
 window.addEventListener("orientationchange", () => setTimeout(fitChrome, 250));
 window.addEventListener("resize", () => {
   const cur = stageSize();
+  if (!cur.w || !cur.h) return;                      // экран мерится нулём — рамку не трогаем
   if (sheet && lastSize && lastSize.w && lastSize.h) {
     const kx = cur.w / lastSize.w, ky = cur.h / lastSize.h;
-    if (Math.abs(kx - 1) > .01 || Math.abs(ky - 1) > .01)
+    if (kx > 0 && ky > 0 && (Math.abs(kx - 1) > .01 || Math.abs(ky - 1) > .01))
       sheet = sheet.map(p => ({ x: p.x * kx, y: p.y * ky }));
   }
   lastSize = cur;

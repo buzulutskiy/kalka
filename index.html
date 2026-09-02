@@ -70,7 +70,8 @@
     -webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
     display:flex;flex-direction:column;gap:10px;transition:transform .22s ease,opacity .22s ease}
   .panel.hidden{transform:translateY(calc(100% - 0px));opacity:0;pointer-events:none}
-  .row{display:flex;gap:8px;align-items:center}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .row .chip{min-width:88px}
   .chip{flex:1;min-width:0;padding:10px 6px;border:1px solid rgba(231,237,233,.20);border-radius:12px;
         background:rgba(231,237,233,.13);color:#CFDAD4;font:500 14px/1 var(--sans)}
   .chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
@@ -87,7 +88,10 @@
        background:rgba(231,237,233,.13);color:var(--ink);font:600 15px/1 var(--sans)}
   .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);flex:1.4}
   .btn:disabled{opacity:.4}
-  .note{margin:0;color:#96A59E;font-size:12px;line-height:1.45}
+  .note{margin:0;color:#96A59E;font-size:12px;line-height:1.5}
+  .note b{color:#CFDAD4}
+  .note .lg{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 5px 0 12px}
+  .note .lg:first-child{margin-left:0}
   .note[hidden]{display:none}
   .row[hidden]{display:none}
 
@@ -169,10 +173,13 @@
     <button class="chip on" data-mode="photo">фото</button>
     <button class="chip" data-mode="edges">контур</button>
     <button class="chip" data-mode="diff">разница</button>
+    <button class="chip" data-mode="cmp">сверка</button>
     <button class="chip" id="bBlink">мигание</button>
   </div>
+  <p class="note" id="cmpNote" hidden></p>
   <label class="sld"><span>прозрачность</span><input id="op" type="range" min="0" max="100" value="45"></label>
   <label class="sld" id="thrRow" hidden><span>порог контура</span><input id="thr" type="range" min="60" max="98" value="88"></label>
+  <label class="sld" id="tolRow" hidden><span>допуск</span><input id="tol" type="range" min="1" max="10" step="1" value="3"></label>
   <p class="note" id="frameNote" hidden></p>
   <div class="row" id="frameRow1" hidden>
     <button class="chip" id="bPaper">лист: A4</button>
