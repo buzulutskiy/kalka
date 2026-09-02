@@ -479,5 +479,22 @@ window.addEventListener("drop", e => {
   } catch (e) {}
 })();
 
+/* Панели держатся за видимую часть экрана, а не за макетную:
+   в Safari адресная строка иначе накрывает нижний ряд кнопок. */
+function fitChrome() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const bottom = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  const top = Math.max(0, Math.round(vv.offsetTop));
+  document.documentElement.style.setProperty("--vvb", bottom + "px");
+  document.documentElement.style.setProperty("--vvt", top + "px");
+}
+if (window.visualViewport) {
+  visualViewport.addEventListener("resize", fitChrome);
+  visualViewport.addEventListener("scroll", fitChrome);
+}
+window.addEventListener("orientationchange", () => setTimeout(fitChrome, 250));
+fitChrome();
+
 applyView();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
